@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+*.p12
+*.sig
+*.pem
+.DS_Store
