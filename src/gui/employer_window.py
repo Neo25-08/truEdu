@@ -21,9 +21,9 @@ class EmployerWindow:
         self.ca_label = tk.Label(self.top, text="CA not loaded", fg="red")
         self.ca_label.pack()
 
-        # Select PDF and signature
-        tk.Button(self.top, text="Verify Signed PDF", command=self.verify, state=tk.DISABLED)
-        self.verify_btn = self.top.children['!button']  # again, referencing
+        # Verify button - store reference directly
+        self.verify_btn = tk.Button(self.top, text="Verify Signed PDF", command=self.verify, state=tk.DISABLED)
+        self.verify_btn.pack(pady=5)
 
         # Close
         tk.Button(self.top, text="Close", command=self.top.destroy).pack(pady=20)
@@ -55,15 +55,11 @@ class EmployerWindow:
         if not sig_file:
             return
 
-        # We need the signer's public key. In a real system, we would extract it from the certificate that signed the PDF.
-        # For simplicity, we assume the signer's certificate is provided separately, or we can ask the user to select it.
-        # We'll ask the user to select the registrar's certificate (PEM or PKCS#12 with cert only).
         cert_file = filedialog.askopenfilename(title="Select Registrar's Certificate (PEM or PKCS#12)", filetypes=[("Certificate files", "*.pem *.crt *.p12")])
         if not cert_file:
             return
         try:
             if cert_file.endswith('.p12'):
-                # Need password to extract cert
                 password = simpledialog.askstring("Password", "Enter PKCS#12 password:", show='*')
                 if password is None:
                     return
@@ -87,7 +83,7 @@ class EmployerWindow:
                 return
 
             # Check revocation
-            if cert_manager.is_revoked(hex(cert.serial_number)[2:]):  # remove '0x'
+            if cert_manager.is_revoked(hex(cert.serial_number)[2:]):
                 messagebox.showerror("Error", "This registrar's certificate has been revoked.")
                 return
 

@@ -32,9 +32,9 @@ class RegistrarWindow:
         # Issue new registrar certificate (if CA)
         tk.Button(self.top, text="Issue New Registrar Certificate", command=self.issue_registrar).pack(pady=5)
 
-        # Sign PDF
-        tk.Button(self.top, text="Sign Student Certificate (PDF)", command=self.sign_pdf, state=tk.DISABLED).pack(pady=5)
-        self.sign_btn = self.top.children['!button3']  # hacky but okay
+        # Sign PDF - store reference directly
+        self.sign_btn = tk.Button(self.top, text="Sign Student Certificate (PDF)", command=self.sign_pdf, state=tk.DISABLED)
+        self.sign_btn.pack(pady=5)
 
         # Revoke a certificate
         tk.Button(self.top, text="Revoke a Certificate", command=self.revoke_cert).pack(pady=5)
@@ -59,7 +59,6 @@ class RegistrarWindow:
             messagebox.showerror("Error", f"Failed to load identity: {str(e)}")
 
     def issue_registrar(self):
-        # This requires CA private key (only available on the system where CA was created)
         if not os.path.exists(cert_manager.CA_KEY_FILE):
             messagebox.showerror("Error", "CA key not found. Only the system that created the CA can issue registrar certificates.")
             return
@@ -101,7 +100,6 @@ class RegistrarWindow:
         if not serial:
             return
         try:
-            # Validate hex
             int(serial, 16)
             cert_manager.revoke_certificate(serial)
             messagebox.showinfo("Success", f"Certificate {serial} revoked.")
