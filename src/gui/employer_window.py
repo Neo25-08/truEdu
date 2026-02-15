@@ -1,12 +1,15 @@
 import tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog
+from tkinter import filedialog, messagebox
 import os
+import glob
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import cert_manager
 import crypto_utils
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives import hashes
 
 class EmployerWindow:
     def __init__(self, parent):
@@ -14,40 +17,54 @@ class EmployerWindow:
         self.top.title("Employer - Verify Certificates")
         self.top.geometry("500x300")
 
-        tk.Label(self.top, text="Employer Verification", font=("Arial", 14)).pack(pady=10)
-
-        # Load CA certificate
-        tk.Button(self.top, text="Load University CA Certificate", command=self.load_ca).pack(pady=5)
-        self.ca_label = tk.Label(self.top, text="CA not loaded", fg="red")
-        self.ca_label.pack()
-
-        # Verify button - store reference directly
-        self.verify_btn = tk.Button(self.top, text="Verify Signed PDF", command=self.verify, state=tk.DISABLED)
+        # Automatically load CA certificate
+        self.ca_cert = self.load_ca_automatically()
+        if self.ca_cert is None:
+            tk.Label(self.top, text="CA certificate not found.\nPlace ca_cert.pem in the application directory.", fg="red").pack(pady=10)
+            self.verify_btn = tk.Button(self.top, text="Verify Signed PDF", state=tk.DISABLED)
+        else:
+            tk.Label(self.top, text="University CA loaded automatically.", fg="green").pack(pady=5)
+            self.verify_btn = tk.Button(self.top, text="Verify Signed PDF", command=self.verify)
         self.verify_btn.pack(pady=5)
-
-        # Close
         tk.Button(self.top, text="Close", command=self.top.destroy).pack(pady=20)
 
-        self.ca_cert = None
+    def load_ca_automatically(self):
+        """Look for ca_cert.pem in current directory; if missing, prompt user to select and copy it."""
+        ca_path = "ca_cert.pem"
+        if os.path.exists(ca_path):
+            try:
+                with open(ca_path, 'rb') as f:
+                    cert_data = f.read()
+                return x509.load_pem_x509_certificate(cert_data, default_backend())
+            except Exception:
+                pass
 
-    def load_ca(self):
-        filename = filedialog.askopenfilename(filetypes=[("PEM files", "*.pem")])
-        if not filename:
-            return
-        try:
-            with open(filename, 'rb') as f:
-                cert_data = f.read()
-            self.ca_cert = x509.load_pem_x509_certificate(cert_data, default_backend())
-            self.ca_label.config(text=f"CA loaded: {os.path.basename(filename)}", fg="green")
-            self.verify_btn.config(state=tk.NORMAL)
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to load CA certificate: {str(e)}")
+        # If not found, ask user to locate it
+        messagebox.showinfo(
+            "CA Certificate",
+            "The University CA certificate (ca_cert.pem) was not found.\n"
+            "Please select it now. It will be copied to the application directory for future use."
+        )
+        filename = filedialog.askopenfilename(title="Select CA certificate", filetypes=[("PEM files", "*.pem")])
+        if filename:
+            try:
+                with open(filename, 'rb') as f:
+                    cert_data = f.read()
+                cert = x509.load_pem_x509_certificate(cert_data, default_backend())
+                # Save a copy locally
+                with open(ca_path, 'wb') as f:
+                    f.write(cert_data)
+                return cert
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to load CA certificate: {str(e)}")
+        return None
 
     def verify(self):
         if not self.ca_cert:
-            messagebox.showerror("Error", "No CA certificate loaded.")
+            messagebox.showerror("Error", "CA certificate not loaded.")
             return
 
+        # Select PDF and signature
         pdf_file = filedialog.askopenfilename(filetypes=[("PDF files", "*.pdf")])
         if not pdf_file:
             return
@@ -55,44 +72,67 @@ class EmployerWindow:
         if not sig_file:
             return
 
-        cert_file = filedialog.askopenfilename(title="Select Registrar's Certificate (PEM or PKCS#12)", filetypes=[("Certificate files", "*.pem *.crt *.p12")])
-        if not cert_file:
+        # Directory containing registrar public certificates
+        registrars_dir = "registrars"
+        if not os.path.isdir(registrars_dir):
+            messagebox.showerror(
+                "Error",
+                f"Registrars directory '{registrars_dir}' not found.\n"
+                "Please create it and place all registrar public certificates (*.pem, *.crt) inside."
+            )
             return
-        try:
-            if cert_file.endswith('.p12'):
-                password = simpledialog.askstring("Password", "Enter PKCS#12 password:", show='*')
-                if password is None:
-                    return
-                _, cert = cert_manager.load_registrar_identity(cert_file, password)
-            else:
+
+        # Gather all candidate certificate files
+        cert_files = glob.glob(os.path.join(registrars_dir, "*.pem")) + glob.glob(os.path.join(registrars_dir, "*.crt"))
+        if not cert_files:
+            messagebox.showerror(
+                "Error",
+                f"No certificate files found in '{registrars_dir}'.\n"
+                "Please add registrar public certificates (exported from their .p12 files)."
+            )
+            return
+
+        ca_public_key = self.ca_cert.public_key()
+        verified = False
+        last_error = ""
+
+        for cert_file in cert_files:
+            try:
                 with open(cert_file, 'rb') as f:
                     cert_data = f.read()
                 cert = x509.load_pem_x509_certificate(cert_data, default_backend())
 
-            # Verify certificate is signed by our CA
-            ca_public_key = self.ca_cert.public_key()
-            try:
-                ca_public_key.verify(
-                    cert.signature,
-                    cert.tbs_certificate_bytes,
-                    padding.PKCS1v15(),
-                    cert.signature_hash_algorithm,
-                )
-            except Exception:
-                messagebox.showerror("Error", "Registrar certificate is not signed by this CA.")
-                return
+                # 1. Verify that the certificate is signed by our CA
+                try:
+                    ca_public_key.verify(
+                        cert.signature,
+                        cert.tbs_certificate_bytes,
+                        padding.PKCS1v15(),
+                        cert.signature_hash_algorithm,
+                    )
+                except Exception:
+                    continue  # Not signed by this CA – skip
 
-            # Check revocation
-            if cert_manager.is_revoked(hex(cert.serial_number)[2:]):
-                messagebox.showerror("Error", "This registrar's certificate has been revoked.")
-                return
+                # 2. Check revocation list
+                if cert_manager.is_revoked(hex(cert.serial_number)[2:]):
+                    continue  # Revoked – skip
 
-            # Now verify the PDF signature
-            public_key = cert.public_key()
-            valid = crypto_utils.verify_signature(pdf_file, sig_file, public_key)
-            if valid:
-                messagebox.showinfo("Success", "Signature is VALID. The document is authentic.")
-            else:
-                messagebox.showerror("Failure", "Signature is INVALID. The document may have been tampered.")
-        except Exception as e:
-            messagebox.showerror("Error", f"Verification failed: {str(e)}")
+                # 3. Verify the PDF signature using this registrar's public key
+                public_key = cert.public_key()
+                if crypto_utils.verify_signature(pdf_file, sig_file, public_key):
+                    verified = True
+                    messagebox.showinfo(
+                        "Success",
+                        f"Signature is VALID.\nVerified using certificate: {os.path.basename(cert_file)}"
+                    )
+                    break
+            except Exception as e:
+                last_error = str(e)
+                continue
+
+        if not verified:
+            messagebox.showerror(
+                "Failure",
+                f"Signature could not be verified with any known registrar certificate.\n"
+                f"Last error: {last_error}"
+            )

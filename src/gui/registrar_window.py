@@ -5,12 +5,13 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import cert_manager
 import crypto_utils
+from cryptography.hazmat.primitives import serialization
 
 class RegistrarWindow:
     def __init__(self, parent):
         self.top = tk.Toplevel(parent)
         self.top.title("Registrar - Issue Certificates")
-        self.top.geometry("600x400")
+        self.top.geometry("600x450")
 
         # Variables
         self.identity_file = None
@@ -36,6 +37,10 @@ class RegistrarWindow:
         self.sign_btn = tk.Button(self.top, text="Sign Student Certificate (PDF)", command=self.sign_pdf, state=tk.DISABLED)
         self.sign_btn.pack(pady=5)
 
+        # Export public certificate (enabled after identity loaded)
+        self.export_btn = tk.Button(self.top, text="Export Public Certificate", command=self.export_public_cert, state=tk.DISABLED)
+        self.export_btn.pack(pady=5)
+
         # Revoke a certificate
         tk.Button(self.top, text="Revoke a Certificate", command=self.revoke_cert).pack(pady=5)
 
@@ -54,6 +59,7 @@ class RegistrarWindow:
             self.identity_file = filename
             self.lbl_id.config(text=f"Loaded: {os.path.basename(filename)}", fg="green")
             self.sign_btn.config(state=tk.NORMAL)
+            self.export_btn.config(state=tk.NORMAL)
             messagebox.showinfo("Success", "Identity loaded successfully.")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load identity: {str(e)}")
@@ -94,6 +100,27 @@ class RegistrarWindow:
             messagebox.showinfo("Success", f"PDF signed successfully. Signature saved to {sig_file}")
         except Exception as e:
             messagebox.showerror("Error", f"Signing failed: {str(e)}")
+
+    def export_public_cert(self):
+        """Export the public certificate (PEM) from the loaded identity."""
+        if not self.cert:
+            messagebox.showerror("Error", "No identity loaded.")
+            return
+        filename = filedialog.asksaveasfilename(
+            title="Save Public Certificate",
+            defaultextension=".pem",
+            filetypes=[("PEM files", "*.pem"), ("All files", "*.*")]
+        )
+        if not filename:
+            return
+        try:
+            # Serialize the certificate to PEM
+            pem_data = self.cert.public_bytes(encoding=serialization.Encoding.PEM)
+            with open(filename, 'wb') as f:
+                f.write(pem_data)
+            messagebox.showinfo("Success", f"Public certificate exported to:\n{filename}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Export failed: {str(e)}")
 
     def revoke_cert(self):
         serial = simpledialog.askstring("Revoke Certificate", "Enter certificate serial number (in hex):")
