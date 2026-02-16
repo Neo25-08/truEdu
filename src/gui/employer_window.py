@@ -17,7 +17,6 @@ class EmployerWindow:
         self.top.title("Employer - Verify Certificates")
         self.top.geometry("500x300")
 
-        # Automatically load CA certificate
         self.ca_cert = self.load_ca_automatically()
         if self.ca_cert is None:
             tk.Label(self.top, text="CA certificate not found.\nPlace ca_cert.pem in the application directory.", fg="red").pack(pady=10)
@@ -29,7 +28,6 @@ class EmployerWindow:
         tk.Button(self.top, text="Close", command=self.top.destroy).pack(pady=20)
 
     def load_ca_automatically(self):
-        """Look for ca_cert.pem in current directory; if missing, prompt user to select and copy it."""
         ca_path = "ca_cert.pem"
         if os.path.exists(ca_path):
             try:
@@ -38,8 +36,6 @@ class EmployerWindow:
                 return x509.load_pem_x509_certificate(cert_data, default_backend())
             except Exception:
                 pass
-
-        # If not found, ask user to locate it
         messagebox.showinfo(
             "CA Certificate",
             "The University CA certificate (ca_cert.pem) was not found.\n"
@@ -51,7 +47,6 @@ class EmployerWindow:
                 with open(filename, 'rb') as f:
                     cert_data = f.read()
                 cert = x509.load_pem_x509_certificate(cert_data, default_backend())
-                # Save a copy locally
                 with open(ca_path, 'wb') as f:
                     f.write(cert_data)
                 return cert
@@ -64,7 +59,6 @@ class EmployerWindow:
             messagebox.showerror("Error", "CA certificate not loaded.")
             return
 
-        # Select PDF and signature
         pdf_file = filedialog.askopenfilename(filetypes=[("PDF files", "*.pdf")])
         if not pdf_file:
             return
@@ -72,7 +66,6 @@ class EmployerWindow:
         if not sig_file:
             return
 
-        # Directory containing registrar public certificates
         registrars_dir = "registrars"
         if not os.path.isdir(registrars_dir):
             messagebox.showerror(
@@ -82,7 +75,6 @@ class EmployerWindow:
             )
             return
 
-        # Gather all candidate certificate files
         cert_files = glob.glob(os.path.join(registrars_dir, "*.pem")) + glob.glob(os.path.join(registrars_dir, "*.crt"))
         if not cert_files:
             messagebox.showerror(
@@ -102,7 +94,7 @@ class EmployerWindow:
                     cert_data = f.read()
                 cert = x509.load_pem_x509_certificate(cert_data, default_backend())
 
-                # 1. Verify that the certificate is signed by our CA
+                # 1. Verify certificate is signed by CA
                 try:
                     ca_public_key.verify(
                         cert.signature,
@@ -111,15 +103,20 @@ class EmployerWindow:
                         cert.signature_hash_algorithm,
                     )
                 except Exception:
-                    continue  # Not signed by this CA – skip
+                    continue
 
-                # 2. Check revocation list
+                # 2. Check revocation
                 if cert_manager.is_revoked(hex(cert.serial_number)[2:]):
-                    continue  # Revoked – skip
+                    continue
 
-                # 3. Verify the PDF signature using this registrar's public key
+                # 3. Verify PDF signature
                 public_key = cert.public_key()
-                if crypto_utils.verify_signature(pdf_file, sig_file, public_key):
+                try:
+                    valid = crypto_utils.verify_signature(pdf_file, sig_file, public_key, timestamp=True)
+                except ValueError as e:
+                    last_error = str(e)
+                    continue  # timestamp too old
+                if valid:
                     verified = True
                     messagebox.showinfo(
                         "Success",

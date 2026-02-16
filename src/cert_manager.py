@@ -12,8 +12,8 @@ CA_CERT_FILE = "ca_cert.pem"
 CA_KEY_FILE = "ca_key.pem"
 CRL_FILE = "crl.json"
 
-def create_self_signed_ca():
-    """Create a self-signed CA certificate and private key."""
+def create_self_signed_ca(password):
+    """Create a self-signed CA certificate and encrypted private key."""
     private_key = crypto_utils.generate_rsa_keypair()
     subject = issuer = x509.Name([
         x509.NameAttribute(NameOID.COUNTRY_NAME, "NP"),
@@ -33,44 +33,39 @@ def create_self_signed_ca():
     ).not_valid_before(
         datetime.datetime.utcnow()
     ).not_valid_after(
-        datetime.datetime.utcnow() + datetime.timedelta(days=3650)  # 10 years
+        datetime.datetime.utcnow() + datetime.timedelta(days=3650)
     ).add_extension(
         x509.BasicConstraints(ca=True, path_length=None), critical=True
     ).sign(private_key, hashes.SHA256(), default_backend())
 
-    # Save CA key and cert
+    # Save CA key encrypted with password
     with open(CA_KEY_FILE, "wb") as f:
         f.write(private_key.private_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption()
+            encryption_algorithm=serialization.BestAvailableEncryption(password.encode('utf-8'))
         ))
     with open(CA_CERT_FILE, "wb") as f:
         f.write(cert.public_bytes(serialization.Encoding.PEM))
     return private_key, cert
 
 def load_ca_cert():
-    """Load the CA certificate from file."""
     with open(CA_CERT_FILE, "rb") as f:
         cert_data = f.read()
     return x509.load_pem_x509_certificate(cert_data, default_backend())
 
-def load_ca_key():
-    """Load the CA private key from file."""
+def load_ca_key(password):
+    """Load CA private key with password."""
     with open(CA_KEY_FILE, "rb") as f:
         key_data = f.read()
-    return serialization.load_pem_private_key(key_data, password=None, backend=default_backend())
+    return serialization.load_pem_private_key(key_data, password=password.encode('utf-8'), backend=default_backend())
 
-def issue_registrar_cert(common_name, output_p12, password):
+def issue_registrar_cert(common_name, output_p12, password, ca_password):
     """Issue a certificate for a registrar signed by the CA."""
-    # Generate registrar key pair
     registrar_key = crypto_utils.generate_rsa_keypair()
-
-    # Load CA key and cert
-    ca_key = load_ca_key()
+    ca_key = load_ca_key(ca_password)
     ca_cert = load_ca_cert()
 
-    # Build registrar certificate
     subject = x509.Name([
         x509.NameAttribute(NameOID.COUNTRY_NAME, "NP"),
         x509.NameAttribute(NameOID.ORGANIZATION_NAME, "truEdu University"),
@@ -92,24 +87,18 @@ def issue_registrar_cert(common_name, output_p12, password):
         x509.BasicConstraints(ca=False, path_length=None), critical=True
     ).sign(ca_key, hashes.SHA256(), default_backend())
 
-    # Save as PKCS#12
     crypto_utils.save_private_key_pkcs12(registrar_key, cert, password, output_p12)
-
-    # Return the cert (for display)
     return cert
 
 def load_registrar_identity(p12_file, password):
-    """Load registrar private key and certificate from PKCS#12."""
     return crypto_utils.load_private_key_pkcs12(p12_file, password)
 
-# CRL functions
 def init_crl():
     if not os.path.exists(CRL_FILE):
         with open(CRL_FILE, 'w') as f:
             json.dump([], f)
 
 def revoke_certificate(serial_number):
-    """Add a certificate serial number to the CRL."""
     init_crl()
     with open(CRL_FILE, 'r') as f:
         crl = json.load(f)
@@ -119,7 +108,6 @@ def revoke_certificate(serial_number):
             json.dump(crl, f)
 
 def is_revoked(serial_number):
-    """Check if a certificate serial number is revoked."""
     init_crl()
     with open(CRL_FILE, 'r') as f:
         crl = json.load(f)
