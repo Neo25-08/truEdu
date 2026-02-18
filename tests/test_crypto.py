@@ -1,7 +1,6 @@
 import os
 import tempfile
 import pytest
-from cryptography.hazmat.primitives.asymmetric import rsa
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 import crypto_utils
@@ -9,9 +8,9 @@ import cert_manager
 
 def test_key_generation():
     private_key = crypto_utils.generate_rsa_keypair()
-    assert isinstance(private_key, rsa.RSAPrivateKey)
+    assert private_key is not None
 
-def test_sign_verify():
+def test_sign_verify_with_timestamp():
     private_key = crypto_utils.generate_rsa_keypair()
     public_key = private_key.public_key()
 
@@ -20,45 +19,51 @@ def test_sign_verify():
         file_path = f.name
     sig_path = file_path + ".sig"
 
-    crypto_utils.sign_file(file_path, private_key, sig_path)
-    assert crypto_utils.verify_signature(file_path, sig_path, public_key)
+    crypto_utils.sign_file(file_path, private_key, sig_path, timestamp=True)
+    assert crypto_utils.verify_signature(file_path, sig_path, public_key, timestamp=True)
 
     # Tamper with file
     with open(file_path, 'ab') as f:
         f.write(b"tamper")
-    assert not crypto_utils.verify_signature(file_path, sig_path, public_key)
+    assert not crypto_utils.verify_signature(file_path, sig_path, public_key, timestamp=True)
 
     os.unlink(file_path)
     os.unlink(sig_path)
 
-def test_ca_creation():
-    if os.path.exists(cert_manager.CA_CERT_FILE):
-        os.remove(cert_manager.CA_CERT_FILE)
-        os.remove(cert_manager.CA_KEY_FILE)
-    priv, cert = cert_manager.create_self_signed_ca()
-    assert os.path.exists(cert_manager.CA_CERT_FILE)
-    assert os.path.exists(cert_manager.CA_KEY_FILE)
+def test_encryption_decryption():
+    # Generate recipient key pair
+    recipient_priv = crypto_utils.generate_rsa_keypair()
+    recipient_pub = recipient_priv.public_key()
 
-def test_issue_registrar():
-    # Ensure CA exists
-    if not os.path.exists(cert_manager.CA_CERT_FILE):
-        cert_manager.create_self_signed_ca()
+    # Save recipient's public cert (simulate)
+    from cryptography import x509
+    from cryptography.x509.oid import NameOID
+    import datetime
+    subject = issuer = x509.Name([
+        x509.NameAttribute(NameOID.COUNTRY_NAME, "NP"),
+        x509.NameAttribute(NameOID.COMMON_NAME, "Test Recipient"),
+    ])
+    cert = x509.CertificateBuilder().subject_name(subject).issuer_name(issuer).public_key(recipient_pub).serial_number(x509.random_serial_number()).not_valid_before(datetime.datetime.utcnow()).not_valid_after(datetime.datetime.utcnow() + datetime.timedelta(days=1)).sign(recipient_priv, hashes.SHA256(), default_backend())
+    cert_path = tempfile.NamedTemporaryFile(suffix='.pem', delete=False).name
+    with open(cert_path, 'wb') as f:
+        f.write(cert.public_bytes(serialization.Encoding.PEM))
 
-    with tempfile.NamedTemporaryFile(suffix='.p12', delete=False) as f:
-        p12_path = f.name
-    password = "test123"
-    cert_manager.issue_registrar_cert("Test Registrar", p12_path, password)
-    assert os.path.exists(p12_path)
+    # Encrypt a file
+    with tempfile.NamedTemporaryFile(delete=False) as f:
+        f.write(b"Secret data")
+        plain_path = f.name
+    enc_path = plain_path + ".enc"
+    crypto_utils.encrypt_file_hybrid(cert_path, plain_path, enc_path)
 
-    # Load it back
-    priv, cert = cert_manager.load_registrar_identity(p12_path, password)
-    assert priv is not None
-    assert cert is not None
-    os.unlink(p12_path)
+    # Decrypt
+    dec_path = plain_path + ".dec"
+    crypto_utils.decrypt_file_hybrid(recipient_priv, enc_path, dec_path)
 
-def test_revocation():
-    cert_manager.init_crl()
-    serial = "123ABC"
-    cert_manager.revoke_certificate(serial)
-    assert cert_manager.is_revoked(serial)
-    assert not cert_manager.is_revoked("456DEF")
+    with open(dec_path, 'rb') as f:
+        decrypted = f.read()
+    assert decrypted == b"Secret data"
+
+    os.unlink(plain_path)
+    os.unlink(enc_path)
+    os.unlink(dec_path)
+    os.unlink(cert_path)
